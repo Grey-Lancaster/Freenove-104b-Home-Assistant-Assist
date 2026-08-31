@@ -291,6 +291,40 @@ display:
         it.print(120, 298, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, now.strftime("%I:%M %p").c_str());
       }
 
+# FT6336U capacitive touch controller -- shares the same I2C bus as the
+# ES8311 codec (I2C is a shared multi-device bus by design, unlike the I2S
+# full-duplex conflict documented elsewhere in this file, so this doesn't
+# carry that same risk). Already physically present and detected at boot
+# (address 0x38 shows up in the I2C bus scan) even before this was added.
+# Pins confirmed against this board's working PlatformIO tutorial
+# (../common.ini's tft_base env: touch RST=18, touch INT=17).
+touchscreen:
+  platform: ft63x6
+  id: touch
+  display: lcd_display
+  interrupt_pin: GPIO17
+  reset_pin: GPIO18
+  on_touch:
+    # Tap-to-listen backup for when the wake word doesn't cooperate. Unlike
+    # wake-word detection, a touch doesn't automatically stop
+    # micro_wake_word (that only happens via its own stop_after_detection
+    # when IT detects the phrase), so it's stopped explicitly here -- same
+    # requirement as any other way of starting voice_assistant that isn't
+    # micro_wake_word's own detection.
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - micro_wake_word.stop:
+          - light.turn_on:
+              id: status_led
+              red: 0%
+              green: 0%
+              blue: 100%
+          - voice_assistant.start:
+              silence_detection: true
+
 microphone:
   - platform: i2s_audio
     id: mic
@@ -394,11 +428,15 @@ micro_wake_word:
   microphone: mic
   models:
     # Default cutoff (0.97) took ~5 tries to trigger in real use; loosened to
-    # 0.85, then 0.80, then 0.75 -- each step still took real effort,
-    # especially the first attempt after a fresh boot. Raise this back up
-    # if it starts false-triggering on background noise/TV.
+    # 0.85, then 0.80, then 0.75 (confirmed zero false wakes at 0.75 in real
+    # use), then 0.65 -- stopping well above the VAD sub-model's own 0.50
+    # threshold below, since that's a "might be speech" floor, not a
+    # confident wake-word match. Touch (see touchscreen: further down) is
+    # the fallback for whenever voice still doesn't cooperate, so there's
+    # less pressure to push this any lower. Raise this back up if it starts
+    # false-triggering on background noise/TV.
     - model: hey_jarvis
-      probability_cutoff: 0.75
+      probability_cutoff: 0.65
   vad:
   on_wake_word_detected:
     - light.turn_on:

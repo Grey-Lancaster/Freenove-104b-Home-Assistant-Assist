@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.16] - 2026-08-31
+
+### Added
+- Tap-to-listen: the FT6336U touch controller (already present on the
+  I2C bus at 0x38, previously unused) now triggers `voice_assistant.start`
+  on any touch, as a fallback for when the wake word doesn't cooperate.
+  Confirmed in real use: a tap lets you speak at a normal tone with no
+  wake-word struggle.
+
+### Changed
+- Wake-word `probability_cutoff` loosened further, 0.75 -> 0.65, now that
+  touch provides a reliable fallback -- stops well above the VAD
+  sub-model's own 0.50 threshold, which is a "might be speech" floor, not
+  a confident wake-word match.
+
 ## [0.5.12] - 2026-08-31
 
 ### Changed

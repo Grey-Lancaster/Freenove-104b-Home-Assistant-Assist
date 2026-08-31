@@ -19,6 +19,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  - id: showing_sensors
+    type: bool
+    restore_value: false
+    initial_value: 'false'
 
 esphome:
   name: papa-lanc-assist
@@ -69,6 +73,7 @@ esphome:
       - lambda: |-
           id(showing_boot_splash) = true;
           id(lcd_display)->update();
+      - script.execute: sensor_screen_timer
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -107,18 +112,24 @@ time:
   - platform: homeassistant
     id: ha_time
 
-# NOTE: no periodic interval refreshing the display anymore. A 30s timer
-# used to call lcd_display->update() here, but every update() does a full
-# 240x320 SPI repaint -- ili9xxx's fill(Color::BLACK) unconditionally marks
-# the whole screen dirty, and image() writes straight to SPI bypassing the
-# buffer entirely, together costing ~200ms (confirmed via a real device log:
-# "interval took a long time for an operation (200 ms), max is 160 ms").
-# micro_wake_word does its detection continuously while idle -- i.e. almost
-# all the time -- so this periodic stall was very likely why wake-word
-# detection got unreliable after this was added. The clock now only
-# refreshes at points that already redraw the screen (on_boot, on_listening,
-# on_stt_end below), which is whenever there's actually something on screen
-# to look at.
+# A previous version of this had an unconditional 30s display-refresh timer
+# here that very likely broke wake-word reliability -- every update() does a
+# full 240x320 SPI repaint (~200ms, confirmed via a real device log:
+# "interval took a long time for an operation (200 ms), max is 160 ms"),
+# and micro_wake_word does its detection continuously while idle, so that
+# fired constantly during ordinary wake-word listening. This one only
+# redraws while the sensors screen (see script: sensor_screen_timer further
+# down) is actually being shown -- i.e. only after 45s+ of idle, not during
+# normal wake-word listening in the first ~45s -- and even then only every
+# 5 minutes, about 10x less often than the old broken timer.
+interval:
+  - interval: 300s
+    then:
+      - if:
+          condition:
+            lambda: return id(showing_sensors);
+          then:
+            - lambda: id(lcd_display)->update();
 
 # --- Audio: ES8311 codec (mic ADC + speaker DAC in one chip) ---
 # Pin map confirmed against this exact board's working PlatformIO tutorial
@@ -200,6 +211,28 @@ display:
         it.image(0, 25, id(grey_fox_logo));
       } else if (id(showing_listening)) {
         it.print(120, 130, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Listening...");
+      } else if (id(showing_sensors)) {
+        const Color cyan(0, 255, 255);
+        int y = 40;
+        it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Sensors");
+        y += 45;
+        // SENSOR-SCREEN: office inside -- comment out with its matching
+        // `sensor:` block further up to remove it from this screen.
+        if (id(office_inside_temp_sensor).has_state()) {
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Office In: %.0fF", id(office_inside_temp_sensor).state);
+        }
+        y += 40;
+        // SENSOR-SCREEN: office outside -- comment out with its matching
+        // `sensor:` block further up to remove it from this screen.
+        if (id(office_outside_temp_sensor).has_state()) {
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Office Out: %.0fF", id(office_outside_temp_sensor).state);
+        }
+        y += 40;
+        // SENSOR-SCREEN: big room -- comment out with its matching
+        // `sensor:` block further up to remove it from this screen.
+        if (id(big_room_temp_sensor).has_state()) {
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Big Room: %.0fF", id(big_room_temp_sensor).state);
+        }
       } else {
         // Word-aware wrap at ~20 chars/line (fits this font at 240px wide) --
         // breaks between words, only hard-splitting a single word if it's
@@ -295,6 +328,52 @@ sensor:
     update_interval: 60s
     entity_category: diagnostic
 
+  # Idle-screen temperature sensors, pulled live from Home Assistant.
+  # Each one below is independent -- to remove it from the idle sensors
+  # screen, comment out its block here AND its matching "SENSOR-SCREEN"
+  # draw block in the display: lambda further down (both are tagged with
+  # the same name so they're easy to find together). If you ever comment
+  # out ALL THREE, also comment out the has_state() check in
+  # sensor_screen_timer below (under script:) -- otherwise it won't
+  # compile, since it references these by id.
+  - platform: homeassistant
+    id: office_inside_temp_sensor   # SENSOR-SCREEN: office inside
+    entity_id: sensor.office_temp
+  - platform: homeassistant
+    id: office_outside_temp_sensor  # SENSOR-SCREEN: office outside
+    entity_id: sensor.office_outside_temp_2
+  - platform: homeassistant
+    id: big_room_temp_sensor        # SENSOR-SCREEN: big room
+    entity_id: sensor.big_room_temperature
+
+# Idle-screen flip timer: after 45s with nothing happening, switches the
+# LCD from whatever it's showing (boot logo or the last You-said/Response
+# screen) to the sensors screen below. Retriggered (mode: restart resets
+# the delay) from on_boot and from voice_assistant's on_end/on_error, so
+# every idle stretch of 45s+ gets the same treatment, not just the first
+# one after boot. Cancelled via script.stop in on_listening so it can't
+# fire mid-conversation and clobber the Listening/You-said screens.
+script:
+  - id: sensor_screen_timer
+    mode: restart
+    then:
+      - delay: 45s
+      - if:
+          # Only flips if at least one sensor has actually reported a real
+          # value -- if all three are unavailable (or you've deleted them,
+          # see the comment under sensor: above), stays on the wake-word
+          # screen instead of flipping to an empty one.
+          condition:
+            lambda: |-
+              return id(office_inside_temp_sensor).has_state() ||
+                     id(office_outside_temp_sensor).has_state() ||
+                     id(big_room_temp_sensor).has_state();
+          then:
+            - lambda: |-
+                id(showing_boot_splash) = false;
+                id(showing_sensors) = true;
+                id(lcd_display)->update();
+
 # --- Onboard WS2812 status LED (GPIO42) ---
 light:
   - platform: esp32_rmt_led_strip
@@ -354,7 +433,13 @@ voice_assistant:
     - lambda: |-
         id(showing_boot_splash) = false;
         id(showing_listening) = true;
+        id(showing_sensors) = false;
         id(lcd_display)->update();
+    # Wake word interrupted whatever idle screen was up -- cancel the
+    # pending sensors-screen flip so it can't fire mid-conversation and
+    # clobber the Listening/You-said screens. Restarted in on_end/on_error
+    # below once back to idle.
+    - script.stop: sensor_screen_timer
   on_stt_end:
     - light.turn_on:
         id: status_led
@@ -397,6 +482,8 @@ voice_assistant:
           - not:
               speaker.is_playing:
     - micro_wake_word.start:
+    # Back to idle -- restart the 45s countdown to the sensors screen.
+    - script.execute: sensor_screen_timer
   on_error:
     - light.turn_on:
         id: status_led
@@ -413,3 +500,5 @@ voice_assistant:
           - not:
               speaker.is_playing:
     - micro_wake_word.start:
+    # Back to idle -- restart the 45s countdown to the sensors screen.
+    - script.execute: sensor_screen_timer

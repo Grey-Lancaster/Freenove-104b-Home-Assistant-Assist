@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.8] - 2026-08-31
+
+### Added
+- Idle sensors screen: after 45 seconds with nothing happening, the LCD
+  flips from the boot logo / last text screen to three Home Assistant
+  temperature sensors (office inside, office outside, big room), then
+  refreshes every 5 minutes while it stays idle. Cancelled and reset
+  around every real interaction so it can't fire mid-conversation.
+  Each sensor is independently comment-out-able (see the matching
+  `SENSOR-SCREEN` tags in both the `sensor:` block and the display
+  `lambda:`); if all three are removed, the screen simply never flips
+  and stays on the wake-word/boot screen instead.
+
+### Investigating
+- Found (not fixed here) a second dead-duplicate HA entity following the
+  same pattern as the earlier orphaned `tplink` config entry:
+  `sensor.office_outside_temp` is `unavailable` while
+  `sensor.office_outside_temp_2` is the live one with real readings. Used
+  the working `_2` entity; the dead one is still sitting in HA.
+
 ## [0.5.4] - 2026-08-31
 
 ### Added

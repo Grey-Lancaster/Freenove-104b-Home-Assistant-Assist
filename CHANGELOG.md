@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.12] - 2026-08-31
+
+### Changed
+- Idle sensors screen now flips after 10s instead of 45s.
+- Wake-word `probability_cutoff` loosened again, 0.80 -> 0.75, after
+  real-world testing showed the first attempt after a fresh boot still
+  took noticeable effort to trigger even at 0.80.
+
 ## [0.5.8] - 2026-08-31
 
 ### Added

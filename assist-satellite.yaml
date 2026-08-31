@@ -119,9 +119,9 @@ time:
 # and micro_wake_word does its detection continuously while idle, so that
 # fired constantly during ordinary wake-word listening. This one only
 # redraws while the sensors screen (see script: sensor_screen_timer further
-# down) is actually being shown -- i.e. only after 45s+ of idle, not during
-# normal wake-word listening in the first ~45s -- and even then only every
-# 5 minutes, about 10x less often than the old broken timer.
+# down) is actually being shown -- i.e. only after 10s+ of idle, not during
+# the very first few seconds of wake-word listening -- and even then only
+# every 5 minutes, about 10x less often than the old broken timer.
 interval:
   - interval: 300s
     then:
@@ -346,18 +346,18 @@ sensor:
     id: big_room_temp_sensor        # SENSOR-SCREEN: big room
     entity_id: sensor.big_room_temperature
 
-# Idle-screen flip timer: after 45s with nothing happening, switches the
+# Idle-screen flip timer: after 10s with nothing happening, switches the
 # LCD from whatever it's showing (boot logo or the last You-said/Response
 # screen) to the sensors screen below. Retriggered (mode: restart resets
 # the delay) from on_boot and from voice_assistant's on_end/on_error, so
-# every idle stretch of 45s+ gets the same treatment, not just the first
+# every idle stretch of 10s+ gets the same treatment, not just the first
 # one after boot. Cancelled via script.stop in on_listening so it can't
 # fire mid-conversation and clobber the Listening/You-said screens.
 script:
   - id: sensor_screen_timer
     mode: restart
     then:
-      - delay: 45s
+      - delay: 10s
       - if:
           # Only flips if at least one sensor has actually reported a real
           # value -- if all three are unavailable (or you've deleted them,
@@ -394,11 +394,11 @@ micro_wake_word:
   microphone: mic
   models:
     # Default cutoff (0.97) took ~5 tries to trigger in real use; loosened to
-    # 0.85 then further to 0.80 after it was still taking real effort to
-    # trigger. Raise this back up if it starts false-triggering on
-    # background noise/TV.
+    # 0.85, then 0.80, then 0.75 -- each step still took real effort,
+    # especially the first attempt after a fresh boot. Raise this back up
+    # if it starts false-triggering on background noise/TV.
     - model: hey_jarvis
-      probability_cutoff: 0.80
+      probability_cutoff: 0.75
   vad:
   on_wake_word_detected:
     - light.turn_on:
@@ -482,7 +482,7 @@ voice_assistant:
           - not:
               speaker.is_playing:
     - micro_wake_word.start:
-    # Back to idle -- restart the 45s countdown to the sensors screen.
+    # Back to idle -- restart the 10s countdown to the sensors screen.
     - script.execute: sensor_screen_timer
   on_error:
     - light.turn_on:
@@ -500,5 +500,5 @@ voice_assistant:
           - not:
               speaker.is_playing:
     - micro_wake_word.start:
-    # Back to idle -- restart the 45s countdown to the sensors screen.
+    # Back to idle -- restart the 10s countdown to the sensors screen.
     - script.execute: sensor_screen_timer

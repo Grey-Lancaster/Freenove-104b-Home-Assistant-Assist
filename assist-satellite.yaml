@@ -1,0 +1,415 @@
+globals:
+  - id: es8311_reg14_value
+    type: int
+    restore_value: false
+    initial_value: '-1'
+  - id: last_heard_text
+    type: std::string
+    restore_value: false
+    initial_value: '"..."'
+  - id: last_response_text
+    type: std::string
+    restore_value: false
+    initial_value: '"..."'
+  - id: showing_boot_splash
+    type: bool
+    restore_value: false
+    initial_value: 'true'
+  - id: showing_listening
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+esphome:
+  name: papa-lanc-assist
+  friendly_name: Papa Lanc Assist
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // Workaround for a bug in ESPHome's es8311 component: configure_mic_()
+          // unconditionally sets ES8311_REG14 bit 6 ("enable PDM digital
+          // microphone") whenever use_microphone is true, with no way to opt
+          // out via YAML. This board's mic is analog (AMIC), not PDM — Freenove's
+          // own known-working driver (07_Echo/src/es8311.cpp,
+          // es8311_microphone_config()) writes REG14=0x1A with that bit clear.
+          // Re-write it here, after the component's own setup() has already run.
+          uint8_t es8311_reg14[2] = {0x14, 0x1A};
+          id(i2c_bus).write(0x18, es8311_reg14, 2);
+
+          // Read back REG14 into a global so its value is exposed as an HA
+          // sensor (0x1A/26 = fixed/analog, 0x5A/90 = still-PDM/unfixed) --
+          // avoids relying on API log-stream timing to prove this ran.
+          uint8_t reg_addr = 0x14;
+          uint8_t reg14_readback = 0xFF;
+          id(i2c_bus).write(0x18, &reg_addr, 1, false);
+          id(i2c_bus).read(0x18, &reg14_readback, 1);
+          id(es8311_reg14_value) = reg14_readback;
+      # Visual, log-independent proof this lambda actually ran: flash the
+      # status LED magenta for half a second right after the I2C fix runs.
+      - light.turn_on:
+          id: status_led
+          red: 100%
+          green: 0%
+          blue: 100%
+      - delay: 500ms
+      - light.turn_off:
+          id: status_led
+      # micro_wake_word defaults to STOPPED at boot and never auto-starts --
+      # without this it just sits idle forever, never listening at all.
+      - micro_wake_word.start:
+      - output.turn_on: lcd_backlight_pin
+      # Boot splash: fill()/image() only draw into the display's in-memory
+      # buffer -- the actual SPI write-out to the physical panel happens
+      # inside update() (do_update_() + write_display_data()). Calling
+      # fill()/image() directly here without update() left the panel showing
+      # stale GRAM content from before the reboot. Go through update() like
+      # every other screen does; the assigned display lambda below checks
+      # showing_boot_splash to decide whether to draw the logo or the text.
+      - lambda: |-
+          id(showing_boot_splash) = true;
+          id(lcd_display)->update();
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Default (true) periodically re-scans for a "better" AP after connecting.
+  # Caught one of these scans ("Roam scan (-53 dBm, attempt 1/3)") sitting
+  # right in the middle of a voice interaction, right when the API connection
+  # dropped and the device got stuck on a blue "listening" LED -- a scan
+  # takes the radio off-channel and can disrupt the live API/audio stream.
+  # This device is plugged in and stationary, so there's nothing to gain
+  # from roaming; disable it outright.
+  post_connect_roaming: false
+# Noise encryption -- turned out not to be what fixed API-audio negotiation
+# (that was unrelated HA-side event loop contention, see project memory), but
+# there's no reason to run without it, so keeping it enabled.
+api:
+  encryption:
+    key: !secret api_encryption_key
+ota:
+  platform: esphome
+
+# Synced from HA for the LCD date/time footer.
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# NOTE: no periodic interval refreshing the display anymore. A 30s timer
+# used to call lcd_display->update() here, but every update() does a full
+# 240x320 SPI repaint -- ili9xxx's fill(Color::BLACK) unconditionally marks
+# the whole screen dirty, and image() writes straight to SPI bypassing the
+# buffer entirely, together costing ~200ms (confirmed via a real device log:
+# "interval took a long time for an operation (200 ms), max is 160 ms").
+# micro_wake_word does its detection continuously while idle -- i.e. almost
+# all the time -- so this periodic stall was very likely why wake-word
+# detection got unreliable after this was added. The clock now only
+# refreshes at points that already redraw the screen (on_boot, on_listening,
+# on_stt_end below), which is whenever there's actually something on screen
+# to look at.
+
+# --- Audio: ES8311 codec (mic ADC + speaker DAC in one chip) ---
+# Pin map confirmed against this exact board's working PlatformIO tutorial
+# firmware (../07_Echo, ../common.ini) — do not change without re-checking
+# those sources.
+i2c:
+  id: i2c_bus
+  sda: GPIO16
+  scl: GPIO15
+  frequency: 400kHz
+
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: GPIO7   # I2S_WS
+    i2s_bclk_pin: GPIO5    # I2S_BCK
+    i2s_mclk_pin: GPIO4    # I2S_MCK — ES8311 requires MCLK
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    address: 0x18
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    use_mclk: true
+    use_microphone: true
+    mic_gain: 42DB
+
+# AP_ENABLE (GPIO1) — held low at boot in the existing driver code
+# (07_Echo/src/main.cpp driver_es8311_init()) before codec bring-up.
+# Declaring it here as an unused output pins it the same way; if speaker
+# output turns out silent/muted, this is the first thing to try flipping.
+output:
+  - platform: gpio
+    pin: GPIO1
+    id: amp_enable_pin
+  # LCD backlight -- TFT_BL in common.ini, active HIGH (TFT_BACKLIGHT_ON=HIGH).
+  - platform: gpio
+    pin: GPIO45
+    id: lcd_backlight_pin
+
+# --- 2.8" ILI9341 LCD (SPI) ---
+# Pin map confirmed against common.ini's working TFT_eSPI config for this
+# exact board (TFT_RST=-1 -- not wired, so no reset_pin here; TFT_RGB_ORDER=
+# TFT_BGR and TFT_INVERSION_ON=1 carried over as color_order/invert_colors).
+spi:
+  id: tft_spi
+  clk_pin: GPIO12
+  mosi_pin: GPIO11
+  miso_pin: GPIO13
+
+font:
+  - file: "gfonts://Roboto"
+    id: display_font
+    size: 20
+
+image:
+  - platform: file
+    file: "images/grey_fox_logo.png"
+    id: grey_fox_logo
+    resize: 240x320   # full-screen boot splash
+    type: RGB565
+
+display:
+  - platform: ili9xxx
+    id: lcd_display
+    model: ILI9341
+    spi_id: tft_spi
+    cs_pin: GPIO10
+    dc_pin: GPIO46
+    invert_colors: true
+    color_order: BGR
+    update_interval: never   # redrawn on demand (see on_stt_end/on_tts_start below), not on a timer
+    lambda: |-
+      it.fill(Color::BLACK);
+      if (id(showing_boot_splash)) {
+        // Logo was pre-cropped to its content bbox (1015x1141), so it
+        // renders at 240x270 within the 240x320 panel -- center vertically:
+        // (320-270)/2 = 25.
+        it.image(0, 25, id(grey_fox_logo));
+      } else if (id(showing_listening)) {
+        it.print(120, 130, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Listening...");
+      } else {
+        // Word-aware wrap at ~20 chars/line (fits this font at 240px wide) --
+        // breaks between words, only hard-splitting a single word if it's
+        // longer than a whole line on its own.
+        // esphome::Color only predefines BLACK/WHITE -- construct others via
+        // the (r, g, b) constructor (esphome/core/color.h).
+        const Color cyan(0, 255, 255);
+        const size_t wrap = 20;
+        int y = 5;
+        auto print_wrapped = [&](const std::string &text) {
+          std::string line;
+          size_t start = 0;
+          while (start <= text.size()) {
+            size_t space = text.find(' ', start);
+            std::string word = (space == std::string::npos) ? text.substr(start) : text.substr(start, space - start);
+            while (word.size() > wrap) {
+              if (!line.empty()) {
+                it.print(5, y, id(display_font), Color::WHITE, line.c_str());
+                y += 25;
+                line.clear();
+              }
+              it.print(5, y, id(display_font), Color::WHITE, word.substr(0, wrap).c_str());
+              y += 25;
+              word = word.substr(wrap);
+            }
+            std::string candidate = line.empty() ? word : line + " " + word;
+            if (candidate.size() <= wrap) {
+              line = candidate;
+            } else {
+              it.print(5, y, id(display_font), Color::WHITE, line.c_str());
+              y += 25;
+              line = word;
+            }
+            if (space == std::string::npos) break;
+            start = space + 1;
+          }
+          if (!line.empty()) {
+            it.print(5, y, id(display_font), Color::WHITE, line.c_str());
+            y += 25;
+          }
+        };
+        it.print(5, y, id(display_font), cyan, "You said:");
+        y += 25;
+        print_wrapped(id(last_heard_text));
+        y += 15;
+        it.print(5, y, id(display_font), cyan, "Response:");
+        y += 25;
+        print_wrapped(id(last_response_text));
+      }
+      // Date/time footer, drawn last over its own solid band so it stays
+      // readable regardless of what's above it (logo or text screen).
+      if (id(ha_time).now().is_valid()) {
+        auto now = id(ha_time).now();
+        it.filled_rectangle(0, 270, 240, 50, Color::BLACK);
+        it.print(120, 273, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, now.strftime("%a, %m/%d/%y").c_str());
+        it.print(120, 298, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, now.strftime("%I:%M %p").c_str());
+      }
+
+microphone:
+  - platform: i2s_audio
+    id: mic
+    i2s_audio_id: i2s_bus
+    adc_type: external
+    i2s_din_pin: GPIO6     # I2S_DINT — ES8311 ADC (mic) output
+    pdm: false
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    # ESPHome's i2s_audio microphone defaults to the RIGHT I2S slot
+    # (i2s_audio/microphone/__init__.py: default_channel=CONF_RIGHT). The
+    # hardware-validated reference driver for this exact board/codec
+    # (../../translate/src/main.cpp) reads mic audio from the LEFT slot only
+    # -- likely why capture has been silent despite correct ES8311 registers.
+    channel: left
+
+speaker:
+  - platform: i2s_audio
+    id: spk
+    i2s_audio_id: i2s_bus
+    dac_type: external
+    i2s_dout_pin: GPIO8    # I2S_DOUT — ES8311 DAC (speaker) input
+    channel: mono
+    bits_per_sample: 16bit
+    sample_rate: 16000
+
+# Diagnostic only: surfaces ES8311 REG14 read back at boot (see on_boot
+# lambda above). 26 (0x1A) = analog mic fix applied, 90 (0x5A) = not applied,
+# -1 = the fix lambda never ran or the I2C read failed.
+sensor:
+  - platform: template
+    name: "ES8311 REG14 Value"
+    id: es8311_reg14_sensor
+    lambda: return id(es8311_reg14_value);
+    update_interval: 60s
+    entity_category: diagnostic
+
+# --- Onboard WS2812 status LED (GPIO42) ---
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    pin: GPIO42
+    num_leds: 1
+    chipset: WS2812
+    channel_colors: GRB
+    name: "Status LED"
+    entity_category: diagnostic
+
+# On-device wake word detection (runs continuously on the mic, no button
+# needed). "vad:" adds a companion voice-activity filter to cut false
+# triggers. stop_after_detection (default true) pauses listening once
+# triggered; voice_assistant's on_end/on_error below restart it so the next
+# "Hey Jarvis" works after every conversation, success or failure.
+micro_wake_word:
+  microphone: mic
+  models:
+    # Default cutoff (0.97) took ~5 tries to trigger in real use; loosened to
+    # 0.85 then further to 0.80 after it was still taking real effort to
+    # trigger. Raise this back up if it starts false-triggering on
+    # background noise/TV.
+    - model: hey_jarvis
+      probability_cutoff: 0.80
+  vad:
+  on_wake_word_detected:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 0%
+        blue: 100%
+    - voice_assistant.start:
+        silence_detection: true
+
+voice_assistant:
+  id: va
+  microphone: mic
+  speaker: spk
+  use_wake_word: false   # wake word is handled locally by micro_wake_word above, not server-side
+  noise_suppression_level: 2
+  # 31dBFS is the hard max ESPHome allows here (confirmed: 40dBFS was
+  # rejected at validation with "value must be at most 31") -- both this and
+  # the ES8311 hardware preamp (mic_gain: 42DB, also its max) are already
+  # maxed out. The mic capsule itself is the real ceiling now, not config.
+  auto_gain: 31dBFS
+  volume_multiplier: 1.0
+  on_listening:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 0%
+        blue: 100%
+    # Fires after the mic has already fully started (confirmed in logs: this
+    # comes after STARTING_MICROPHONE completes), so this redraw isn't racing
+    # the sensitive wake-word-to-mic handoff.
+    - lambda: |-
+        id(showing_boot_splash) = false;
+        id(showing_listening) = true;
+        id(lcd_display)->update();
+  on_stt_end:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 100%
+        blue: 0%
+    - lambda: |-
+        id(showing_boot_splash) = false;
+        id(showing_listening) = false;
+        id(last_heard_text) = x;
+        id(last_response_text) = "...";
+        id(lcd_display)->update();
+  on_tts_start:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 100%
+        blue: 0%
+    - lambda: |-
+        id(last_response_text) = x;
+        id(lcd_display)->update();
+  on_tts_end:
+    - light.turn_off:
+        id: status_led
+  on_end:
+    - light.turn_off:
+        id: status_led
+    # on_end fires as soon as the pipeline handshake ends (RUN_END), NOT once
+    # TTS has actually finished playing -- confirmed in voice_assistant.cpp,
+    # the end_trigger_ fires unconditionally on VOICE_ASSISTANT_RUN_END even
+    # while still in STREAMING_RESPONSE. Restarting the wake word mic here
+    # unguarded raced the speaker's own startup on every single interaction
+    # ("Parent bus is busy"). Wait for both to genuinely finish first --
+    # matches the official ESPHome wake-word-voice-assistants reference
+    # (esphome/wake-word-voice-assistants, m5stack-atom-echo.yaml on_end).
+    - wait_until:
+        and:
+          - not:
+              voice_assistant.is_running:
+          - not:
+              speaker.is_playing:
+    - micro_wake_word.start:
+  on_error:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 0%
+        blue: 0%
+    - delay: 1s
+    - light.turn_off:
+        id: status_led
+    - wait_until:
+        and:
+          - not:
+              voice_assistant.is_running:
+          - not:
+              speaker.is_playing:
+    - micro_wake_word.start:

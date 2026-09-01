@@ -218,20 +218,30 @@ display:
         y += 45;
         // SENSOR-SCREEN: office inside -- comment out with its matching
         // `sensor:` block further up to remove it from this screen.
+        // Label + value on separate lines -- "76 Fahrenheit" spelled out
+        // is too wide for one line alongside the label at this font size.
         if (id(office_inside_temp_sensor).has_state()) {
-          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Office In: %.0fF", id(office_inside_temp_sensor).state);
+          it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Office In");
+          y += 25;
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "%.0f Fahrenheit", id(office_inside_temp_sensor).state);
+          y += 10;
         }
-        y += 40;
+        y += 25;
         // SENSOR-SCREEN: office outside -- comment out with its matching
         // `sensor:` block further up to remove it from this screen.
         if (id(office_outside_temp_sensor).has_state()) {
-          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Office Out: %.0fF", id(office_outside_temp_sensor).state);
+          it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Office Out");
+          y += 25;
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "%.0f Fahrenheit", id(office_outside_temp_sensor).state);
+          y += 10;
         }
-        y += 40;
+        y += 25;
         // SENSOR-SCREEN: big room -- comment out with its matching
         // `sensor:` block further up to remove it from this screen.
         if (id(big_room_temp_sensor).has_state()) {
-          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Big Room: %.0fF", id(big_room_temp_sensor).state);
+          it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Big Room");
+          y += 25;
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "%.0f Fahrenheit", id(big_room_temp_sensor).state);
         }
       } else {
         // Word-aware wrap at ~20 chars/line (fits this font at 240px wide) --
@@ -427,17 +437,22 @@ light:
 micro_wake_word:
   microphone: mic
   models:
-    # Default cutoff (0.97) took ~5 tries to trigger in real use; loosened to
-    # 0.85, then 0.80, then 0.75 (confirmed zero false wakes at 0.75 in real
-    # use), then 0.65 -- stopping well above the VAD sub-model's own 0.50
-    # threshold below, since that's a "might be speech" floor, not a
-    # confident wake-word match. Touch (see touchscreen: further down) is
-    # the fallback for whenever voice still doesn't cooperate, so there's
-    # less pressure to push this any lower. Raise this back up if it starts
-    # false-triggering on background noise/TV.
+    # Default cutoff (0.97) took ~5 tries to trigger in real use; loosened
+    # step by step to 0.85, 0.80, 0.75, 0.65 -- confirmed zero false wakes
+    # even with real TV audio running at 0.65, so loosened further to 0.55.
+    # Raise this back up if it starts false-triggering on background
+    # noise/TV.
     - model: hey_jarvis
-      probability_cutoff: 0.65
+      probability_cutoff: 0.55
+  # VAD acts as an independent confirmation gate alongside the wake-word
+  # model above -- both have to clear their own cutoff, or the detection is
+  # blocked (logged as "Wake word model predicts 'hey_jarvis', but VAD
+  # model doesn't"). Its own default cutoff is 0.50 (not a hard floor, just
+  # the manifest's default); loosened here for the same reason as the model
+  # above, now that real-world testing (TV audio, zero false positives)
+  # shows real headroom.
   vad:
+    probability_cutoff: 0.40
   on_wake_word_detected:
     - light.turn_on:
         id: status_led

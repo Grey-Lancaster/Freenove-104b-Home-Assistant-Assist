@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.20] - 2026-09-01
+
+### Changed
+- Wake-word cutoff loosened further, 0.65 -> 0.55, after confirming zero
+  false wakes through real TV audio at 0.65.
+- VAD cutoff (the independent confirmation gate alongside the wake-word
+  model -- both must clear their own threshold, or detection is blocked)
+  explicitly set to 0.40, down from its 0.50 manifest default, for the
+  same reason.
+- Sensors screen now shows each temperature as a label line ("Office In")
+  followed by a value line ("76 Fahrenheit") instead of one combined
+  line ending in a bare "F" -- spells the unit out in full, matching a
+  parallel fix on the spoken side (see project memory: three new
+  Home-Assistant sentence-trigger automations override Piper's literal
+  reading of the "°F" unit symbol as just the letter "F").
+
 ## [0.5.16] - 2026-08-31
 
 ### Added

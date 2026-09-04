@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.28] - 2026-09-04
+
+### Changed
+- README: clarified that the three sensors screen entities are specific
+  to the original author's home and meant to be swapped for your own
+  (or removed), not left as-is.
+
 ## [0.5.24] - 2026-09-04
 
 ### Added

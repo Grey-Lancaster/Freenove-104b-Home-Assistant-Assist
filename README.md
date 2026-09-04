@@ -84,11 +84,15 @@ building.
    word or a tap
 3. **You said / Response**: live transcript and assistant reply,
    word-wrapped, with a date/time footer synced from Home Assistant
-4. **Sensors**: after 10s idle, flips to office inside/outside and
-   big-room temperatures (pulled live from HA), refreshing every 5
-   minutes. Each sensor is independently comment-out-able in the YAML
-   (see the matching `SENSOR-SCREEN` tags); if all three are removed, this
-   screen just never appears.
+4. **Sensors**: after 10s idle, flips to three example temperature
+   sensors (office inside/outside, big room) pulled live from HA,
+   refreshing every 5 minutes. These are specific to the original
+   author's home — swap the three `entity_id:`s under `sensor:` (tagged
+   `SENSOR-SCREEN`) for whatever HA entities you actually want shown, or
+   just comment a block out to drop it (each has a matching draw block in
+   the display `lambda:`, tagged the same way, that needs commenting out
+   alongside it). If all three are removed, this screen just never
+   appears.
 
 ## Known limits
 

@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.24] - 2026-09-04
+
+### Added
+- Boot-splash screen now shows the device's IP address instead of the
+  date/time footer (via a new `wifi_info` text sensor), redrawn whenever
+  WiFi actually connects/disconnects. An empty/"No WiFi" value makes a
+  real connectivity problem visible at a glance instead of the device
+  just sitting on the logo with no obvious explanation.
+- README: documented touch (now confirmed working via real USB-serial
+  debugging), the sensors screen, and why `psram: speed: 80MHz` is valid
+  on this specific module (octal PSRAM, not the more common quad).
+
+### Fixed
+- Sensors screen reverted to a compact single line per sensor
+  ("Office In: 76°F") instead of the two-line spelled-out version --
+  the degree symbol (already in the font's default glyph set) reads
+  fine and takes far less space than "Fahrenheit".
+- Touch's `on_touch` handler only checked `not voice_assistant.is_running`
+  before starting a new session -- a tap landing in the narrow gap
+  between a session ending and the speaker actually finishing playback
+  could start a new session while the previous one's cleanup was still
+  in flight. Added the same `not speaker.is_playing` guard already used
+  for the automatic wake-word restart.
+- Wake-word cutoff loosened once more, 0.55 -> 0.50, matching the VAD
+  model's own cutoff (0.40 remains the tighter of the two).
+
 ## [0.5.20] - 2026-09-01
 
 ### Changed

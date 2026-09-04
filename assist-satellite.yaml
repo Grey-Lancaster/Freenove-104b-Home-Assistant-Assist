@@ -98,6 +98,18 @@ wifi:
   # This device is plugged in and stationary, so there's nothing to gain
   # from roaming; disable it outright.
   post_connect_roaming: false
+  # Redraws the current screen when WiFi actually connects/disconnects --
+  # needed because the boot-splash's IP-address check (see display: lambda)
+  # runs during on_boot, which happens well before WiFi association
+  # finishes (that's asynchronous, always takes a few seconds). Without
+  # this, the boot splash always shows "No WiFi" even when the connection
+  # is about to succeed fine -- confirmed on real hardware. These only fire
+  # on an actual state transition, not on a timer, so no repeated-redraw
+  # risk during ordinary wake-word listening.
+  on_connect:
+    - lambda: id(lcd_display)->update();
+  on_disconnect:
+    - lambda: id(lcd_display)->update();
 # Noise encryption -- turned out not to be what fixed API-audio negotiation
 # (that was unrelated HA-side event loop contention, see project memory), but
 # there's no reason to run without it, so keeping it enabled.
@@ -209,6 +221,13 @@ display:
         // renders at 240x270 within the 240x320 panel -- center vertically:
         // (320-270)/2 = 25.
         it.image(0, 25, id(grey_fox_logo));
+        // IP address instead of the date/time footer here -- an empty
+        // string means no WiFi connection, which used to be invisible
+        // (device just sat on this screen with no obvious sign anything
+        // was wrong even after a successful wake + touch).
+        it.filled_rectangle(0, 270, 240, 50, Color::BLACK);
+        std::string ip = id(wifi_ip).state;
+        it.print(120, 285, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, ip.empty() ? "No WiFi" : ip.c_str());
       } else if (id(showing_listening)) {
         it.print(120, 130, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Listening...");
       } else if (id(showing_sensors)) {
@@ -218,30 +237,20 @@ display:
         y += 45;
         // SENSOR-SCREEN: office inside -- comment out with its matching
         // `sensor:` block further up to remove it from this screen.
-        // Label + value on separate lines -- "76 Fahrenheit" spelled out
-        // is too wide for one line alongside the label at this font size.
         if (id(office_inside_temp_sensor).has_state()) {
-          it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Office In");
-          y += 25;
-          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "%.0f Fahrenheit", id(office_inside_temp_sensor).state);
-          y += 10;
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Office In: %.0f\xC2\xB0" "F", id(office_inside_temp_sensor).state);
         }
-        y += 25;
+        y += 40;
         // SENSOR-SCREEN: office outside -- comment out with its matching
         // `sensor:` block further up to remove it from this screen.
         if (id(office_outside_temp_sensor).has_state()) {
-          it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Office Out");
-          y += 25;
-          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "%.0f Fahrenheit", id(office_outside_temp_sensor).state);
-          y += 10;
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Office Out: %.0f\xC2\xB0" "F", id(office_outside_temp_sensor).state);
         }
-        y += 25;
+        y += 40;
         // SENSOR-SCREEN: big room -- comment out with its matching
         // `sensor:` block further up to remove it from this screen.
         if (id(big_room_temp_sensor).has_state()) {
-          it.print(120, y, id(display_font), cyan, TextAlign::TOP_CENTER, "Big Room");
-          y += 25;
-          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "%.0f Fahrenheit", id(big_room_temp_sensor).state);
+          it.printf(120, y, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, "Big Room: %.0f\xC2\xB0" "F", id(big_room_temp_sensor).state);
         }
       } else {
         // Word-aware wrap at ~20 chars/line (fits this font at 240px wide) --
@@ -293,8 +302,10 @@ display:
         print_wrapped(id(last_response_text));
       }
       // Date/time footer, drawn last over its own solid band so it stays
-      // readable regardless of what's above it (logo or text screen).
-      if (id(ha_time).now().is_valid()) {
+      // readable regardless of what's above it. Skipped on the boot-splash
+      // screen, which shows the IP address in this same band instead (see
+      // above).
+      if (!id(showing_boot_splash) && id(ha_time).now().is_valid()) {
         auto now = id(ha_time).now();
         it.filled_rectangle(0, 270, 240, 50, Color::BLACK);
         it.print(120, 273, id(display_font), Color::WHITE, TextAlign::TOP_CENTER, now.strftime("%a, %m/%d/%y").c_str());
@@ -321,10 +332,19 @@ touchscreen:
     # when IT detects the phrase), so it's stopped explicitly here -- same
     # requirement as any other way of starting voice_assistant that isn't
     # micro_wake_word's own detection.
+    # Also checks speaker.is_playing, not just voice_assistant.is_running --
+    # a tap landing in the gap between a session ending and the speaker
+    # actually finishing playback could otherwise start a new session while
+    # the previous one's cleanup (on_end's own wait_until below) is still in
+    # flight. Same race this project already hit once with the wake-word
+    # restart timing; same fix.
     - if:
         condition:
-          not:
-            voice_assistant.is_running:
+          and:
+            - not:
+                voice_assistant.is_running:
+            - not:
+                speaker.is_playing:
         then:
           - micro_wake_word.stop:
           - light.turn_on:
@@ -360,6 +380,18 @@ speaker:
     channel: mono
     bits_per_sample: 16bit
     sample_rate: 16000
+
+# Exposes the device's current IP for the boot-splash screen (shows it
+# instead of the date/time footer there -- see display: lambda above) and
+# as an HA diagnostic entity. Empty/blank state means no WiFi connection,
+# which is exactly the "stuck on the logo, LED blue, nothing obviously
+# wrong" symptom this was added to make visible at a glance.
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      name: "IP Address"
+      entity_category: diagnostic
 
 # Diagnostic only: surfaces ES8311 REG14 read back at boot (see on_boot
 # lambda above). 26 (0x1A) = analog mic fix applied, 90 (0x5A) = not applied,
@@ -438,12 +470,13 @@ micro_wake_word:
   microphone: mic
   models:
     # Default cutoff (0.97) took ~5 tries to trigger in real use; loosened
-    # step by step to 0.85, 0.80, 0.75, 0.65 -- confirmed zero false wakes
-    # even with real TV audio running at 0.65, so loosened further to 0.55.
-    # Raise this back up if it starts false-triggering on background
-    # noise/TV.
+    # step by step to 0.85, 0.80, 0.75, 0.65, 0.55 -- confirmed zero false
+    # wakes even with real TV audio at 0.65, so loosened further to 0.50.
+    # Touch (see touchscreen: further down) is a confirmed-reliable fallback
+    # regardless. Raise this back up if it starts false-triggering on
+    # background noise/TV.
     - model: hey_jarvis
-      probability_cutoff: 0.55
+      probability_cutoff: 0.50
   # VAD acts as an independent confirmation gate alongside the wake-word
   # model above -- both have to clear their own cutoff, or the detection is
   # blocked (logged as "Wake word model predicts 'hey_jarvis', but VAD
